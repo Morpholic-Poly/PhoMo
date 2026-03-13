@@ -1,5 +1,5 @@
 # PhoMo
-Photomode style n-panel for Blender 4.5
+Photomode style n-panel for Blender
 
 ! Please pardon the dust while I work on this readme. By far, my least favorite part.
 
