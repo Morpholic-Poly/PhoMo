@@ -14,14 +14,12 @@ import os
 
 _active_camera_cache = None
 
+
 def _global_presets_path():
     """Return the path to the global presets JSON file in Blender's config dir."""
     return os.path.join(
         bpy.utils.user_resource('CONFIG'), 'phomo_global_presets.json'
     )
-
-def _get_active_camera(context):
-    return context.scene.camera
 
 
 def _dof_visible(context):
@@ -31,9 +29,10 @@ def _dof_visible(context):
         return False
     return space.shading.type in {'MATERIAL', 'RENDERED'}
 
+
 def _update_fstop(self, context):
     """Sync PhoMo F-Stop to the active camera and auto-enable DoF."""
-    cam = _get_active_camera(context)
+    cam = context.scene.camera
     if cam is None:
         return
     cam.data.dof.use_dof = True
@@ -41,14 +40,11 @@ def _update_fstop(self, context):
 
 
 def _update_camera_exposure(self, context):
-    """
-    self = Camera data block.
-    Sync this camera's per-camera exposure to the scene only when it is
-    the currently active camera.
-    """
+    """Sync this camera's exposure to the scene when it is the active camera."""
     scene = context.scene
     if scene.camera and scene.camera.data == self:
         scene.view_settings.exposure = self.phomo_exposure
+
 
 @bpy.app.handlers.persistent
 def _on_depsgraph_update(scene, depsgraph):
@@ -60,8 +56,9 @@ def _on_depsgraph_update(scene, depsgraph):
     cam = scene.camera
     if cam != _active_camera_cache:
         _active_camera_cache = cam
-        if cam is not None:
+        if cam is not None and hasattr(cam.data, 'phomo_exposure'):
             scene.view_settings.exposure = cam.data.phomo_exposure
+
 
 def _read_global_presets():
     path = _global_presets_path()
@@ -82,6 +79,7 @@ def _write_global_presets(presets_list):
         return True
     except Exception:
         return False
+
 
 class PhoMoPresetItem(bpy.types.PropertyGroup):
     """Represents one saved preset stored in the .blend file (scene scope)."""
@@ -147,7 +145,7 @@ class PHOMO_OT_focus_on_selection(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        cam = _get_active_camera(context)
+        cam = context.scene.camera
         active = context.active_object
         return (
             cam is not None
@@ -157,12 +155,13 @@ class PHOMO_OT_focus_on_selection(bpy.types.Operator):
         )
 
     def execute(self, context):
-        cam = _get_active_camera(context)
+        cam = context.scene.camera
         target = context.active_object
         cam.data.dof.use_dof = True
         cam.data.dof.focus_object = target
         self.report({'INFO'}, f"PhoMo: Focus locked to \"{target.name}\"")
         return {'FINISHED'}
+
 
 class PHOMO_OT_toggle_cinematic(bpy.types.Operator):
     bl_idname = "phomo.toggle_cinematic"
@@ -183,6 +182,7 @@ class PHOMO_OT_toggle_cinematic(bpy.types.Operator):
         space.show_gizmo = not is_cinematic
         self.report({'INFO'}, f"PhoMo: Cinematic View {'ON' if is_cinematic else 'OFF'}")
         return {'FINISHED'}
+
 
 class PHOMO_OT_set_portrait(bpy.types.Operator):
     bl_idname = "phomo.set_portrait"
@@ -231,6 +231,7 @@ class PHOMO_OT_apply_custom_res(bpy.types.Operator):
         )
         return {'FINISHED'}
 
+
 class PHOMO_OT_save_preset(bpy.types.Operator):
     bl_idname = "phomo.save_preset"
     bl_label = "Save Preset"
@@ -272,7 +273,7 @@ class PHOMO_OT_save_preset(bpy.types.Operator):
         col.prop(self, "capture_dimensions")
 
     def execute(self, context):
-        cam = _get_active_camera(context)
+        cam = context.scene.camera
         scene = context.scene
         render = scene.render
 
@@ -280,40 +281,39 @@ class PHOMO_OT_save_preset(bpy.types.Operator):
             self.report({'ERROR'}, "PhoMo: Preset name cannot be empty")
             return {'CANCELLED'}
 
-        data = {'name': self.preset_name.strip()}
-        if self.capture_focal_length and cam:
-            data['focal_length'] = cam.data.lens
-        if self.capture_fstop and cam:
-            data['fstop'] = scene.phomo.fstop
-        if self.capture_exposure and cam:
-            data['exposure'] = cam.data.phomo_exposure
-        if self.capture_dimensions:
-            data['res_x'] = render.resolution_x
-            data['res_y'] = render.resolution_y
+        name = self.preset_name.strip()
 
         if self.save_globally:
-            presets = _read_global_presets()
-            presets.append(data)
-            if _write_global_presets(presets):
-                self.report({'INFO'}, f"PhoMo: Preset \"{data['name']}\" saved globally")
+            data = {'name': name}
+            if self.capture_focal_length and cam:
+                data['focal_length'] = cam.data.lens
+            if self.capture_fstop and cam:
+                data['fstop'] = scene.phomo.fstop
+            if self.capture_exposure and cam:
+                data['exposure'] = cam.data.phomo_exposure
+            if self.capture_dimensions:
+                data['res_x'] = render.resolution_x
+                data['res_y'] = render.resolution_y
+            if _write_global_presets(_read_global_presets() + [data]):
+                self.report({'INFO'}, f"PhoMo: Preset \"{name}\" saved globally")
             else:
                 self.report({'ERROR'}, "PhoMo: Failed to write global presets file")
             return {'FINISHED'}
 
         item = scene.phomo_presets.add()
-        item.name = data['name']
-        if 'focal_length' in data:
-            item.focal_length = data['focal_length']
+        item.name = name
+        if self.capture_focal_length and cam:
+            item.focal_length = cam.data.lens
             item.has_focal_length = True
-        if 'fstop' in data:
-            item.fstop = data['fstop']
+        if self.capture_fstop and cam:
+            item.fstop = scene.phomo.fstop
             item.has_fstop = True
-        if 'exposure' in data:
-            item.exposure = data['exposure']
+        if self.capture_exposure and cam:
+            item.exposure = cam.data.phomo_exposure
             item.has_exposure = True
-        if 'res_x' in data:
-            item.res_x = data['res_x']
-            item.res_y = data['res_y']
+        if self.capture_dimensions:
+            item.res_x = render.resolution_x
+            item.res_y = render.resolution_y
             item.has_dimensions = True
 
         self.report({'INFO'}, f"PhoMo: Preset \"{item.name}\" saved to scene")
@@ -330,7 +330,7 @@ class PHOMO_OT_load_preset(bpy.types.Operator):
     is_global: bpy.props.BoolProperty(default=False)
 
     def execute(self, context):
-        cam = _get_active_camera(context)
+        cam = context.scene.camera
         scene = context.scene
         render = scene.render
 
@@ -398,6 +398,7 @@ class PHOMO_OT_delete_preset(bpy.types.Operator):
         self.report({'INFO'}, f"PhoMo: Deleted preset \"{name}\"")
         return {'FINISHED'}
 
+
 class VIEW3D_PT_phomo(bpy.types.Panel):
     """Root panel — shows active camera name, hosts all subpanels."""
     bl_label = "PhoMo Camera"
@@ -408,7 +409,7 @@ class VIEW3D_PT_phomo(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        cam = _get_active_camera(context)
+        cam = context.scene.camera
 
         if cam is None:
             col = layout.column(align=True)
@@ -418,6 +419,7 @@ class VIEW3D_PT_phomo(bpy.types.Panel):
 
         row = layout.row()
         row.label(text=cam.name, icon='CAMERA_DATA')
+
 
 class VIEW3D_PT_phomo_lens(bpy.types.Panel):
     bl_label = "Lens"
@@ -429,12 +431,12 @@ class VIEW3D_PT_phomo_lens(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _get_active_camera(context) is not None
+        return context.scene.camera is not None
 
     def draw(self, context):
         layout = self.layout
         props = context.scene.phomo
-        cam = _get_active_camera(context)
+        cam = context.scene.camera
 
         col = layout.column(align=True)
         col.prop(cam.data, "lens", text="Focal Length")
@@ -466,6 +468,7 @@ class VIEW3D_PT_phomo_lens(bpy.types.Panel):
         row.scale_y = 1.2
         row.operator("phomo.focus_on_selection", text="Focus on Selection", icon='CURSOR')
 
+
 class VIEW3D_PT_phomo_frame(bpy.types.Panel):
     bl_label = "Frame"
     bl_idname = "VIEW3D_PT_phomo_frame"
@@ -476,7 +479,7 @@ class VIEW3D_PT_phomo_frame(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _get_active_camera(context) is not None
+        return context.scene.camera is not None
 
     def draw(self, context):
         layout = self.layout
@@ -506,6 +509,7 @@ class VIEW3D_PT_phomo_frame(bpy.types.Panel):
         row.prop(props, "custom_res_y", text="H")
         col.operator("phomo.apply_custom_res", text="Apply", icon='CHECKMARK')
 
+
 class VIEW3D_PT_phomo_exposure(bpy.types.Panel):
     bl_label = "Exposure"
     bl_idname = "VIEW3D_PT_phomo_exposure"
@@ -516,11 +520,11 @@ class VIEW3D_PT_phomo_exposure(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return _get_active_camera(context) is not None
+        return context.scene.camera is not None
 
     def draw(self, context):
         layout = self.layout
-        cam = _get_active_camera(context)
+        cam = context.scene.camera
 
         col = layout.column(align=True)
         col.prop(cam.data, "phomo_exposure", text="Exposure (EV)", slider=True)
@@ -528,6 +532,7 @@ class VIEW3D_PT_phomo_exposure(bpy.types.Panel):
         row = col.row()
         row.enabled = False
         row.label(text="Per-camera. Synced on camera switch.", icon='INFO')
+
 
 class VIEW3D_PT_phomo_view(bpy.types.Panel):
     bl_label = "View"
@@ -550,6 +555,7 @@ class VIEW3D_PT_phomo_view(bpy.types.Panel):
             icon='CHECKMARK' if is_cinematic else 'PLAY',
             depress=is_cinematic,
         )
+
 
 class VIEW3D_PT_phomo_presets(bpy.types.Panel):
     bl_label = "Presets"
@@ -604,9 +610,11 @@ class VIEW3D_PT_phomo_presets(bpy.types.Panel):
             row = box.row(align=True)
             row.label(text=item.name, icon='BOOKMARKS')
             op = row.operator("phomo.load_preset", text="", icon='IMPORT')
-            op.index = i; op.is_global = False
+            op.index = i
+            op.is_global = False
             op = row.operator("phomo.delete_preset", text="", icon='TRASH')
-            op.index = i; op.is_global = False
+            op.index = i
+            op.is_global = False
 
             tag_str = self._preset_tag_string(
                 item.has_focal_length, item.has_fstop,
@@ -629,9 +637,11 @@ class VIEW3D_PT_phomo_presets(bpy.types.Panel):
             row = box.row(align=True)
             row.label(text=data.get('name', 'Unnamed'), icon='WORLD')
             op = row.operator("phomo.load_preset", text="", icon='IMPORT')
-            op.index = i; op.is_global = True
+            op.index = i
+            op.is_global = True
             op = row.operator("phomo.delete_preset", text="", icon='TRASH')
-            op.index = i; op.is_global = True
+            op.index = i
+            op.is_global = True
 
             tag_str = self._preset_tag_string(
                 'focal_length' in data, 'fstop' in data,
@@ -642,6 +652,7 @@ class VIEW3D_PT_phomo_presets(bpy.types.Panel):
                 sub = box.row()
                 sub.enabled = False
                 sub.label(text=tag_str)
+
 
 _classes = (
     PhoMoPresetItem,
